@@ -128,8 +128,11 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                 
                 # Remove empty lines from the description, since they aren't technically supported by the ICalendar RFC
                 if copied_event.get("DESCRIPTION"):
-                    copied_event["DESCRIPTION"] = os.linesep.join([s for s in copied_event.get("DESCRIPTION").splitlines() if s.strip()])
-
+                    desc_str = copied_event.decoded("DESCRIPTION").decode("utf-8", errors="ignore")
+                    # Now desc_str is a normal Python string
+                    desc_str = "\n".join(line for line in desc_str.splitlines() if line.strip())
+                    copied_event["DESCRIPTION"] = desc_str.strip()
+                    
                 temp_cal[copied_event['UID']] = copied_event
                 
     

@@ -128,7 +128,7 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                 
                 # Remove empty lines from the description, since they aren't technically supported by the ICalendar RFC
                 if copied_event.get("DESCRIPTION"):
-                    copied_event["DESCRIPTION"] = os.linesep.join([s for s in copied_event.get("DESCRIPTION").splitlines() if s])
+                    copied_event["DESCRIPTION"] = os.linesep.join([s for s in copied_event.get("DESCRIPTION").splitlines() if s.strip()])
 
                 temp_cal[copied_event['UID']] = copied_event
                 
@@ -141,9 +141,11 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
     combined_cal.add_missing_timezones()
 
     # Write the combined calendar to the output file in binary mode.
-    return func.HttpResponse(combined_cal.to_ical(),
-                status_code=200
+    headers = {"Content-Type": "text/calendar"}
+    response = func.HttpResponse(body=combined_cal.to_ical(),
+                status_code=200, headers=headers
             )
+    return response
 
 def create_uid(input_string):
     string_bytes = input_string.encode('utf-8')

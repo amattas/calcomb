@@ -1,6 +1,7 @@
 import azure.functions as func
 import logging
 import os
+import re
 import json
 import requests
 import uuid
@@ -41,16 +42,17 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
     # Set today's date in UTC using built-in zoneinfo (Python 3.9+)
     today = datetime.now(ZoneInfo("UTC")).date()
 
-    # Create the temporary calendar dictionary, we use this to handle duplicate UIDs
-    temp_cal = { }
-
     # Create the combined calendar
     combined_cal = Calendar()
     combined_cal.add("prodid", "-//Combcal//NONSGML//EN")
     combined_cal.add("version", "2.0")
     combined_cal.add("x-wr-calname", name)
 
+    # Create the temporary calendar dictionary, we use this to handle duplicate UIDs
+    temp_cal = { }
+
     for calendar in calendars:
+        
         # Validate the calendar has an ID
         if calendar.get("Id") is None:
             return func.HttpResponse(f"Invalid calendar source configuration", status_code=500)
@@ -96,7 +98,7 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                     copied_event.DURATION = timedelta(minutes=calendar.get("Duration"))
               
                 # If there is no duration or end time set appropriately. If we have the wrong data type ignore the record. 
-                elif copied_event.DTSTART is None and copied_event.DURATION is None:
+                elif copied_event.DTEND is None and copied_event.DURATION is None:
                     if isinstance(copied_event.DTSTART, datetime):
                         copied_event.DURATION = timedelta(minutes=5)
                     elif isinstance(copied_event.DTSTART, date):
@@ -115,13 +117,19 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                 if calendar.get("Prefix") is not None:
                     copied_event['SUMMARY'] = f"{calendar.get('Prefix')}: {copied_event['SUMMARY']}"
 
-                # Update UID to a GUID format.
+                # Update UID to a unique value if specified
                 if calendar.get("MakeUnique") is not None and calendar.get("MakeUnique"):              
                     # If two calendars may have the same event, and we don't want the second calendar in the configuration
-                    # to overwrite the first calendar, we can force a unique UID. 
+                    # to overwrite the first calendar, we can force a unique UID. The start datetime is included in the hash
+                    # because of how Apple handles changing individual instances of a recurring event.
                     copied_event['UID'] = create_uid(f"{calendar.get('Id')}-{copied_event['UID']}")
+                # If we aren't updating it, we still want to make sure the UID is a guid, otherwise it can cause problems
+                # with Outlook. But we don't want to overwrite it otherwise, because calendars coming from Apple Calendar
+                # uses GUIDs, and if you update it, it will break recurring meetings.
                 else:
-                    copied_event['UID'] = create_uid(copied_event['UID'])
+                    guid_regex = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+                    if not guid_regex.match(copied_event['UID']):
+                        copied_event['UID'] = create_uid(f"{copied_event['UID']}")
 
                 # Remove Organizer
                 copied_event.pop("ORGANIZER", None)
@@ -133,12 +141,21 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                     desc_str = "\n".join(line for line in desc_str.splitlines() if line.strip())
                     copied_event["DESCRIPTION"] = desc_str.strip()
                     
-                temp_cal[copied_event['UID']] = copied_event
+                # Some calendars we want to force to de-duplicate, for example. TeamSnap calendars have a calender of games and practices
+                # and a calendar of just games. We load them both, but add padding to the games for the arrival time. Since we load the
+                # game calendar second, and all the events have the same UIDs we want to make sure we aren't duplicating them in the feed.
+                # This is simply handled by adding events to a dictionary first. 
+                if calendar.get("FilterDuplicates") is not None and calendar.get("FilterDuplicates"):
+                    temp_cal[copied_event['UID']] = copied_event
+                # For others like Apple Calendar, duplicate UIDs are expectedd for recurring events, so we want to add them directly to 
+                # maintain all of the data.
+                else:
+                    combined_cal.add_component(copied_event)
                 
     
-    # Add temp_cal items to combined_cal
+    # Add all the deduplicated events to the calendar.
     for e in temp_cal.values():
-        combined_cal.add_component(e)
+       combined_cal.add_component(e)
 
     # Add missing timezones
     combined_cal.add_missing_timezones()

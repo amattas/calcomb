@@ -54,6 +54,7 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
     for calendar in calendars:
         
         # Validate the calendar has an ID
+
         if calendar.get("Id") is None:
             return func.HttpResponse(f"Invalid calendar source configuration", status_code=500)
         
@@ -140,7 +141,48 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                     # Now desc_str is a normal Python string
                     desc_str = "\n".join(line for line in desc_str.splitlines() if line.strip())
                     copied_event["DESCRIPTION"] = desc_str.strip()
-                    
+                
+                # Normalize date/time properties
+                # Single date/time fields: DTSTART, DTEND, RECURRENCE-ID
+                # Preserve timezone-aware datetimes to maintain local times and DST behavior; leave naive datetimes as-is
+                for dtprop in ("DTSTART", "DTEND", "RECURRENCE-ID"):
+                    original = copied_event.pop(dtprop, None)
+                    if original is not None:
+                        # Extract python date or datetime
+                        if isinstance(original, datetime):
+                            dt = original
+                        elif hasattr(original, 'dt'):
+                            dt = original.dt
+                        else:
+                            dt = original
+                        # Add back without converting timezone
+                        copied_event.add(dtprop, dt)
+                # Multi-value recurrence date fields: RDATE, EXDATE 
+                # Preserve timezone-aware datetimes; leave naive datetimes as-is
+                for listprop in ("RDATE", "EXDATE"):
+                    prop_list = copied_event.pop(listprop, None)
+                    if prop_list is not None:
+                        # Ensure list
+                        vals = prop_list if isinstance(prop_list, list) else [prop_list]
+                        merged = []
+                        for pv in vals:
+                            # vDDDList support
+                            dates = getattr(pv, 'dts', None)
+                            if dates is not None:
+                                for d in dates:
+                                    merged.append(d.dt)
+                            # plain list
+                            elif isinstance(pv, list):
+                                merged.extend(pv)
+                            # single date/datetime
+                            else:
+                                merged.append(pv)
+                        # Add items without converting timezone
+                        new_list = []
+                        for dt in merged:
+                            new_list.append(dt)
+                        copied_event.add(listprop, new_list)
+                                                    
                 # Some calendars we want to force to de-duplicate, for example. TeamSnap calendars have a calender of games and practices
                 # and a calendar of just games. We load them both, but add padding to the games for the arrival time. Since we load the
                 # game calendar second, and all the events have the same UIDs we want to make sure we aren't duplicating them in the feed.

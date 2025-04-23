@@ -69,6 +69,10 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
             except Exception as err:
                 return func.HttpResponse(f"Unable to parse calendar with id {calendar.get('Id')}", status_code=500)
 
+            # copy all of iCloud’s native timezone definitions into the combined calendar
+            for tz in ical.walk("VTIMEZONE"):
+                combined_cal.add_component(tz)
+
             for component in ical.walk("VEVENT"):
                 end = component.get("dtend")
 
@@ -157,8 +161,9 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
     for e in temp_cal.values():
        combined_cal.add_component(e)
 
-    # Add missing timezones
-    combined_cal.add_missing_timezones()
+    # # Add missing timezones
+    # a = combined_cal.get_missing_tzids()
+    # combined_cal.add_missing_timezones()
 
     # Write the combined calendar to the output file in binary mode.
     headers = {"Content-Type": "text/calendar"}

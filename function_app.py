@@ -148,14 +148,18 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
                 for dtprop in ("DTSTART", "DTEND", "RECURRENCE-ID"):
                     original = copied_event.pop(dtprop, None)
                     if original is not None:
-                        # Extract python date or datetime
+                        # Extract python date or datetime and convert to UTC if timezone-aware
                         if isinstance(original, datetime):
-                            dt = original
+                            dt = original.astimezone(ZoneInfo("UTC"))
                         elif hasattr(original, 'dt'):
-                            dt = original.dt
+                            dt_val = original.dt
+                            if isinstance(dt_val, datetime) and dt_val.tzinfo is not None:
+                                dt = dt_val.astimezone(ZoneInfo("UTC"))
+                            else:
+                                dt = dt_val
                         else:
                             dt = original
-                        # Add back without converting timezone
+                        # Add back in UTC timezone
                         copied_event.add(dtprop, dt)
                 # Multi-value recurrence date fields: RDATE, EXDATE 
                 # Preserve timezone-aware datetimes; leave naive datetimes as-is

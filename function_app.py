@@ -10,6 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from datetime import timedelta, datetime, date
 from icalendar import Calendar, Event
+from dateutil.rrule import rrulestr
 
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
@@ -201,7 +202,10 @@ def get_cal(req: func.HttpRequest) -> func.HttpResponse:
     
     # Add all the deduplicated events to the calendar.
     for e in temp_cal.values():
-       combined_cal.add_component(e)
+        combined_cal.add_component(e)
+
+    # Merge Apple-split recurring events (iCloud DST splits) into single series
+    combined_cal = merge_recurring_sets(combined_cal)
 
     # Add missing timezones
     combined_cal.add_missing_timezones()
@@ -218,3 +222,55 @@ def create_uid(input_string):
     hashed_bytes = hashlib.sha1(string_bytes).digest()
     guid = uuid.uuid5(uuid.NAMESPACE_DNS, hashed_bytes.hex())
     return str(guid)
+
+
+def merge_recurring_sets(cal: Calendar) -> Calendar:
+    """
+    Merge VEVENTs that share the same RELATED-TO (iCloud recurrence-set) into single VEVENTs
+    with an RDATE listing all occurrences.
+    """
+    new_cal = Calendar()
+    # Copy top-level calendar properties
+    for name, value in cal.items():
+        new_cal.add(name, value)
+    grouped = {}
+    others = []
+    # Partition components by recurrence-set
+    for comp in cal.subcomponents:
+        if not isinstance(comp, Event):
+            new_cal.add_component(comp)
+            continue
+        recset = comp.get('RELATED-TO')
+        if recset:
+            key = str(recset)
+            grouped.setdefault(key, []).append(comp)
+        else:
+            others.append(comp)
+    # Add non-grouped events
+    for ev in others:
+        new_cal.add_component(ev)
+    # Merge grouped events
+    for key, evs in grouped.items():
+        if len(evs) == 1:
+            new_cal.add_component(evs[0])
+            continue
+        base = evs[0]
+        all_dtstarts = []
+        for ev in evs:
+            dt0 = ev.decoded('DTSTART')
+            rrule_prop = ev.get('RRULE')
+            if rrule_prop:
+                rule_str = rrule_prop.to_ical().decode()
+                occurrences = list(rrulestr(rule_str, dtstart=dt0))
+                all_dtstarts.extend(occurrences)
+            else:
+                all_dtstarts.append(dt0)
+        # Deduplicate and sort
+        unique_dates = sorted(set(all_dtstarts))
+        # Remove old recurrence properties
+        base.pop('RRULE', None)
+        base.pop('SEQUENCE', None)
+        # Add RDATE with all occurrences
+        base.add('RDATE', unique_dates)
+        new_cal.add_component(base)
+    return new_cal
